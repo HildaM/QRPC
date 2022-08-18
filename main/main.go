@@ -49,13 +49,21 @@ func main() {
 			log.Println("reply: ", reply)
 		}(i)
 	}
-	wg.Wait()
+	// wg.Wait()
 
 	// 3. 测试异步请求
 	args := "Asynchronous Call"
 	var reply string
-	done := make(chan *qrpc.Call, 10)
-	call := client.Go("Foo.sum", args, &reply, done)
+	//done := make(chan *qrpc.Call, 10)
+	call := client.Go("Foo.sum", args, &reply, nil)
+	// 新建协程，异步等待
+	go func(call *qrpc.Call) {
+		if call == nil {
+			log.Println("call is null")
+		}
+		ch := <-call.Done
+		log.Println("asynchronous reply: ", ch.Reply)
+	}(call)
 
-	println(call)
+	wg.Wait()
 }
