@@ -2,11 +2,10 @@ package main
 
 import (
 	qrpc "QRPC"
-	"QRPC/codec"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -23,28 +22,40 @@ func startServer(addr chan string) {
 }
 
 func main() {
+	log.SetFlags(0)
+
+	// 1. 初始化数据
 	addr := make(chan string)
 	go startServer(addr)
 
-	conn, _ := net.Dial("tcp", <-addr)
-	defer func() { _ = conn.Close() }()
+	client, _ := qrpc.Dial("tcp", <-addr)
+	defer func() { _ = client.Close() }()
 
 	time.Sleep(time.Second)
 
-	// 发送 option
-	_ = json.NewEncoder(conn).Encode(qrpc.DefaultOption)
-	cc := codec.NewGobCodec(conn)
+	// 2. RPC请求
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
 
-	for i := 0; i < 500; i++ {
-		h := &codec.Header{
-			ServiceMethod: "Foo.Sum",
-			Seq:           uint64(i),
-		}
-		_ = cc.Write(h, fmt.Sprintf("qrpc req %d", h.Seq))
-		_ = cc.ReadHeader(h)
+			args := fmt.Sprintf("qrpc req %d", i)
+			var reply string
 
-		var reply string
-		_ = cc.ReadBody(&reply)
-		log.Println("reply: ", reply)
+			if err := client.Call("Foo.sum", args, &reply); err != nil {
+				log.Fatal("call Foo.sum error: ", err)
+			}
+			log.Println("reply: ", reply)
+		}(i)
 	}
+	wg.Wait()
+
+	// 3. 测试异步请求
+	args := "Asynchronous Call"
+	var reply string
+	done := make(chan *qrpc.Call, 10)
+	call := client.Go("Foo.sum", args, &reply, done)
+
+	println(call)
 }

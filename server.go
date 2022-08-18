@@ -61,7 +61,7 @@ func (server *Server) ServerConn(conn io.ReadWriteCloser) {
 	}
 	// 判断是否为RPC请求
 	if opt.MagicNumber != MagicNumber {
-		log.Panicf("rcp server: invalid magic number %x, may be it's not a rpc request", opt.MagicNumber)
+		log.Printf("rcp server: invalid magic number %x, may be it's not a rpc request", opt.MagicNumber)
 		return
 	}
 
@@ -76,7 +76,7 @@ func (server *Server) ServerConn(conn io.ReadWriteCloser) {
 	server.serverCodec(dec(conn))
 }
 
-// 错误请求，为了后续出现RPC请求失败而设置
+// 错误请求，为了后续出现RPC请求失败而设置的空结构体
 var invalidRequest = struct{}{}
 
 /*
@@ -103,7 +103,7 @@ func (server *Server) serverCodec(cc codec.Codec) {
 		}
 		// 正常处理RPC请求
 		wg.Add(1)
-		// 使用协程并非处理请求
+		// 使用协程并发处理请求
 		go server.handleRequest(cc, req, sending, wg)
 	}
 
