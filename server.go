@@ -144,7 +144,7 @@ func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 		argvi = req.argv.Addr().Interface() // 将值参数转换为指针参数
 	}
 
-	// 3. 解析请求体
+	// 3. 解析远程函数的入参
 	if err = cc.ReadBody(argvi); err != nil {
 		log.Println("rpc server: read argc error: ", err)
 		return req, err

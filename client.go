@@ -102,7 +102,7 @@ func (client *Client) terminateCalls(err error) {
 	}
 }
 
-// receive 接受call请求
+// receive 接受server返回的RPC调用结果
 func (client *Client) receive() {
 	var err error
 	for {
