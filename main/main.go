@@ -2,7 +2,6 @@ package main
 
 import (
 	qrpc "QRPC"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -10,10 +9,16 @@ import (
 )
 
 func startServer(addr chan string) {
-	// 选择一个可以使用的端口
+	// 1. 注册服务
+	var foo Foo
+	if err := qrpc.Register(&foo); err != nil {
+		log.Fatal("register error ", err)
+	}
+
+	// 2. 选择端口
 	l, err := net.Listen("tcp", ":0")
 	if err != nil {
-		log.Fatal("network error: ", err)
+		log.Fatal("network error ", err)
 	}
 
 	log.Println("start rpc server on ", l.Addr())
@@ -24,7 +29,6 @@ func startServer(addr chan string) {
 func main() {
 	log.SetFlags(0)
 
-	// 1. 初始化数据
 	addr := make(chan string)
 	go startServer(addr)
 
@@ -33,37 +37,33 @@ func main() {
 
 	time.Sleep(time.Second)
 
-	// 2. RPC请求
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-
-			args := fmt.Sprintf("qrpc req %d", i)
-			var reply string
-
-			if err := client.Call("Foo.sum", args, &reply); err != nil {
-				log.Fatal("call Foo.sum error: ", err)
+			args := &Args{
+				Num1: i,
+				Num2: i * 100,
 			}
-			log.Println("reply: ", reply)
+			var reply int
+			if err := client.Call("Foo.Sum", args, &reply); err != nil {
+				log.Fatal("call Foo.Sum error: ", err)
+			}
+
+			log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
 		}(i)
 	}
-	// wg.Wait()
-
-	// 3. 测试异步请求
-	args := "Asynchronous Call"
-	var reply string
-	//done := make(chan *qrpc.Call, 10)
-	call := client.Go("Foo.sum", args, &reply, nil)
-	// 新建协程，异步等待
-	go func(call *qrpc.Call) {
-		if call == nil {
-			log.Println("call is null")
-		}
-		ch := <-call.Done
-		log.Println("asynchronous reply: ", ch.Reply)
-	}(call)
 
 	wg.Wait()
+}
+
+type Foo int
+type Args struct {
+	Num1, Num2 int
+}
+
+func (f Foo) Sum(args Args, reply *int) error {
+	*reply = args.Num1 + args.Num2
+	return nil
 }

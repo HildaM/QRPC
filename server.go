@@ -3,11 +3,12 @@ package qrpc
 import (
 	"QRPC/codec"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -23,7 +24,9 @@ var DefaultOption = &Option{
 	CodecType:   codec.GobType,
 }
 
-type Server struct{}
+type Server struct {
+	serviceMap sync.Map // 并发读写map
+}
 
 func NewServer() *Server {
 	return &Server{}
@@ -114,22 +117,37 @@ func (server *Server) serverCodec(cc codec.Codec) {
 type request struct {
 	h            *codec.Header // 请求头
 	argv, replyv reflect.Value // 请求体与响应体（使用反射确定）
+	mtype        *methodType
+	svc          *service
 }
 
 func (server *Server) readRequest(cc codec.Codec) (*request, error) {
+	// 1. 读取请求头，获取请求的ServiceMethod
 	h, err := server.readRequestHeader(cc)
 	if err != nil {
 		return nil, err
 	}
 
-	req := &request{
-		h: h,
+	// 2. 根据ServiceMethod，寻找服务
+	req := &request{h: h}
+	req.svc, req.mtype, err = server.findService(h.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+	req.argv = req.mtype.newArgv()
+	req.replyv = req.mtype.newReplyv()
+
+	// 需要确保请求参数是一个指针类型，readBody方法需要指针作为入参
+	argvi := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Ptr {
+		// Addr returns a pointer value representing the address of v.
+		argvi = req.argv.Addr().Interface() // 将值参数转换为指针参数
 	}
 
-	// TODO 暂时不处理请求的参数类型，日后处理
-	req.argv = reflect.New(reflect.TypeOf("")) // 以空参数替代
-	if err = cc.ReadBody(req.argv.Interface()); err != nil {
+	// 3. 解析请求体
+	if err = cc.ReadBody(argvi); err != nil {
 		log.Println("rpc server: read argc error: ", err)
+		return req, err
 	}
 
 	return req, nil
@@ -161,10 +179,52 @@ func (server *Server) sendResponse(cc codec.Codec, h *codec.Header, body interfa
 }
 
 func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
-	// TODO 需要请求注册的RPC方法来获取正确的请求
-
 	defer wg.Done()
-	log.Println(req.h, req.argv.Elem())
-	req.replyv = reflect.ValueOf(fmt.Sprintf("QRPC resp %d", req.h.Seq))
+
+	// RPC远程调用方法
+	if err := req.svc.call(req.mtype, req.argv, req.replyv); err != nil {
+		req.h.Error = err.Error()
+		server.sendResponse(cc, req.h, invalidRequest, sending)
+		return
+	}
+
 	server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+}
+
+// Register 将服务注册
+func (server *Server) Register(rcvr interface{}) error {
+	s := newService(rcvr)
+	if _, dup := server.serviceMap.LoadOrStore(s.name, s); dup {
+		// 检测是否重复注册
+		return errors.New("rpc service already defined: " + s.name)
+	}
+	return nil
+}
+
+func Register(rcvr interface{}) error {
+	return DefaultServer.Register(rcvr)
+}
+
+// findService 根据serviceMethod字符串寻找已经注册的服务
+func (server *Server) findService(serviceMethod string) (svc *service, mtype *methodType, err error) {
+	dot := strings.LastIndex(serviceMethod, ".")
+	if dot < 0 {
+		err = errors.New("rpc server: service/method request ill-formed " + serviceMethod)
+		return
+	}
+
+	serviceName, methodName := serviceMethod[:dot], serviceMethod[dot+1:]
+	svci, ok := server.serviceMap.Load(serviceName)
+	if !ok {
+		err = errors.New("rpc server: can't find service " + serviceName)
+		return
+	}
+
+	svc = svci.(*service)
+	mtype = svc.method[methodName]
+	if mtype == nil {
+		err = errors.New("rpc server: can't find method " + methodName)
+	}
+
+	return
 }
