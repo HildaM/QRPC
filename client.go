@@ -2,6 +2,7 @@ package qrpc
 
 import (
 	"QRPC/codec"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 type Call struct {
@@ -136,9 +138,9 @@ func (client *Client) receive() {
 }
 
 func NewClient(conn net.Conn, opt *Option) (*Client, error) {
-	codec := codec.NewCodecFuncMap[opt.CodecType]
-	if codec == nil {
-		err := fmt.Errorf("invalid codec type %s", opt.CodecType)
+	f := codec.NewCodecFuncMap[opt.CodecType]
+	if f == nil {
+		err := fmt.Errorf("invalid f type %s", opt.CodecType)
 		log.Println("rpc client: codec error ", err)
 		return nil, err
 	}
@@ -151,7 +153,7 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 	}
 
 	// 前置参数处理后，开始真正处理
-	return newClientCodec(codec(conn), opt), nil
+	return newClientCodec(f(conn), opt), nil
 }
 
 func newClientCodec(cc codec.Codec, opt *Option) *Client {
@@ -187,7 +189,8 @@ func parseOptions(opts ...*Option) (*Option, error) {
 	return opt, nil
 }
 
-func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+// Dial_WithoutTimeout Deprecated
+func Dial_WithoutTimeout(network string, address string, opts ...*Option) (client *Client, err error) {
 	opt, err := parseOptions(opts...)
 	if err != nil {
 		return nil, err
@@ -259,8 +262,73 @@ func (client *Client) Go(serviceMethod string, args, reply interface{}, done cha
 	return call
 }
 
-// Call 同步接口，封装Go方法，阻塞call.Done，等待响应返回
-func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
+// Call Deprecated 同步接口，封装Go方法，阻塞call.Done，等待响应返回
+func (client *Client) Call_old(serviceMethod string, args, reply interface{}) error {
 	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
 	return call.Error
+}
+
+// Call 带有超出处理的call请求方法
+func (client *Client) Call(ctx context.Context, serviceMethod string, arg, reply interface{}) error {
+	call := client.Go(serviceMethod, arg, reply, make(chan *Call, 1))
+
+	select {
+	case <-ctx.Done():
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed " + ctx.Err().Error())
+	case call := <-call.Done:
+		return call.Error
+	}
+}
+
+type clientResult struct {
+	client *Client
+	err    error
+}
+
+// 标记函数 —— 用于函数形参简化
+type newClientFunc func(conn net.Conn, opt *Option) (client *Client, err error)
+
+// dialTimeout 超时处理
+func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (client *Client, err error) {
+	opt, err := parseOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	// 如果client为空，则关闭连接
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	ch := make(chan clientResult)
+	go func() {
+		client, err := f(conn, opt)
+		ch <- clientResult{client: client, err: err}
+	}()
+
+	// 如果不设定超时限制，则立即阻塞等待ch返回
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
+
+	// 等待connectTimeout后，如果ch没有任何返回，则执行第一行的命令。
+	// 否则，ch在指定限期内，返回连接的client结果，则执行成功
+	select {
+	case <-time.After(opt.ConnectTimeout):
+		return nil, fmt.Errorf("rpc client: connect timeout: expect whith %s", opt.ConnectTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
+}
+
+func Dial(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewClient, network, address, opts...)
 }

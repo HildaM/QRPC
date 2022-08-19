@@ -2,6 +2,7 @@ package main
 
 import (
 	qrpc "QRPC"
+	"context"
 	"log"
 	"net"
 	"sync"
@@ -47,7 +48,7 @@ func main() {
 				Num2: i * 100,
 			}
 			var reply int
-			if err := client.Call("Foo.Sum", args, &reply); err != nil {
+			if err := client.Call(context.Background(), "Foo.Sum", args, &reply); err != nil {
 				log.Fatal("call Foo.Sum error: ", err)
 			}
 

@@ -4,24 +4,29 @@ import (
 	"QRPC/codec"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 const MagicNumber = 0x3bef5c
 
 type Option struct {
-	MagicNumber int        // 用来标记当前的请求是 RPC请求
-	CodecType   codec.Type // 设定当前请求body的类型
+	MagicNumber    int           // 用来标记当前的请求是 RPC请求
+	CodecType      codec.Type    // 设定当前请求body的类型
+	ConnectTimeout time.Duration // 0 意味着没有限制
+	HandleTimeout  time.Duration
 }
 
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.GobType,
+	MagicNumber:    MagicNumber,
+	CodecType:      codec.GobType,
+	ConnectTimeout: time.Second * 10, // 默认10秒
 }
 
 type Server struct {
@@ -76,7 +81,7 @@ func (server *Server) ServerConn(conn io.ReadWriteCloser) {
 	}
 
 	// 3. 处理请求
-	server.serverCodec(dec(conn))
+	server.serverCodec(dec(conn), &opt)
 }
 
 // 错误请求，为了后续出现RPC请求失败而设置的空结构体
@@ -87,7 +92,7 @@ var invalidRequest = struct{}{}
 2. 处理请求 handleRequest
 3. 回复请求 sendResponse
 */
-func (server *Server) serverCodec(cc codec.Codec) {
+func (server *Server) serverCodec(cc codec.Codec, opt *Option) {
 	// 原子操作，确保发送一个完整的请求
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
@@ -107,7 +112,7 @@ func (server *Server) serverCodec(cc codec.Codec) {
 		// 正常处理RPC请求
 		wg.Add(1)
 		// 使用协程并发处理请求
-		go server.handleRequest(cc, req, sending, wg)
+		go server.handleRequest(cc, req, sending, wg, opt.HandleTimeout)
 	}
 
 	wg.Wait()
@@ -178,7 +183,8 @@ func (server *Server) sendResponse(cc codec.Codec, h *codec.Header, body interfa
 	}
 }
 
-func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+// handleRequest Deprecated
+func (server *Server) handleRequest_old(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	// RPC远程调用方法
@@ -189,6 +195,41 @@ func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.
 	}
 
 	server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+}
+
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
+	defer wg.Done()
+
+	called := make(chan struct{})
+	sent := make(chan struct{})
+
+	go func() {
+		err := req.svc.call(req.mtype, req.argv, req.replyv)
+		called <- struct{}{}
+		if err != nil {
+			req.h.Error = err.Error()
+			server.sendResponse(cc, req.h, invalidRequest, sending)
+			sent <- struct{}{}
+			return
+		}
+
+		server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+		sent <- struct{}{}
+	}()
+
+	if timeout == 0 {
+		<-called
+		<-sent
+		return
+	}
+
+	select {
+	case <-time.After(timeout):
+		req.h.Error = fmt.Sprintf("rpc server: request handle timeout: expect within %s", timeout)
+		server.sendResponse(cc, req.h, invalidRequest, sending)
+	case <-called:
+		<-sent
+	}
 }
 
 // Register 将服务注册
