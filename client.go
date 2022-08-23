@@ -2,6 +2,7 @@ package qrpc
 
 import (
 	"QRPC/codec"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -331,4 +334,46 @@ func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (cli
 
 func Dial(network, address string, opts ...*Option) (*Client, error) {
 	return dialTimeout(NewClient, network, address, opts...)
+}
+
+// NewHTTPClient 通过HTTP协议创建 client
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	// 建立 CONNECT 连接
+	// 注意！！！建立连接的字符串一个字符都不能出错！！！多了一个点都会报错！
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+
+	// 在切换到RPC协议前，需要返回成功连接http的响应
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err == nil && resp.Status == connected {
+		return NewClient(conn, opt)
+	}
+
+	if err == nil {
+		// status != connected
+		err = errors.New("unexpected HTTP response: " + resp.Status)
+	}
+
+	return nil, err
+}
+
+// DialHTTP 通过特定的地址，连接一个HTTP RPC server
+func DialHTTP(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+
+// XDial 统一接口
+func XDial(rpcAddr string, opts ...*Option) (*Client, error) {
+	parts := strings.Split(rpcAddr, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", rpcAddr)
+	}
+
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		// tcp, unix or other transpoet protocol
+		return Dial(protocol, addr, opts...)
+	}
 }

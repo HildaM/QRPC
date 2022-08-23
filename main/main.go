@@ -5,49 +5,51 @@ import (
 	"context"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
 
-func startServer(addr chan string) {
-	// 1. 注册服务
-	var foo Foo
-	if err := qrpc.Register(&foo); err != nil {
-		log.Fatal("register error ", err)
-	}
+type Foo int
 
-	// 2. 选择端口
-	l, err := net.Listen("tcp", ":0")
-	if err != nil {
-		log.Fatal("network error ", err)
-	}
-
-	log.Println("start rpc server on ", l.Addr())
-	addr <- l.Addr().String()
-	qrpc.Accept(l)
+type Args struct {
+	Num1, Num2 int
 }
 
-func main() {
-	log.SetFlags(0)
+func (f Foo) Sum(args Args, reply *int) error {
+	*reply = args.Num1 + args.Num2
+	return nil
+}
 
-	addr := make(chan string)
-	go startServer(addr)
+func startServer(addCh chan string) {
+	var foo Foo
+	l, _ := net.Listen("tcp", ":9999")
 
-	client, _ := qrpc.Dial("tcp", <-addr)
+	_ = qrpc.Register(&foo)
+	qrpc.HandleHTTP()
+
+	addCh <- l.Addr().String()
+	_ = http.Serve(l, nil)
+}
+
+func call(addCh chan string) {
+	client, _ := qrpc.DialHTTP("tcp", <-addCh)
 	defer func() { _ = client.Close() }()
 
 	time.Sleep(time.Second)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+
 			args := &Args{
 				Num1: i,
-				Num2: i * 100,
+				Num2: i * i,
 			}
 			var reply int
+
 			if err := client.Call(context.Background(), "Foo.Sum", args, &reply); err != nil {
 				log.Fatal("call Foo.Sum error: ", err)
 			}
@@ -59,12 +61,11 @@ func main() {
 	wg.Wait()
 }
 
-type Foo int
-type Args struct {
-	Num1, Num2 int
-}
+func main() {
+	log.SetFlags(0)
 
-func (f Foo) Sum(args Args, reply *int) error {
-	*reply = args.Num1 + args.Num2
-	return nil
+	ch := make(chan string)
+	go call(ch)
+	startServer(ch)
+
 }

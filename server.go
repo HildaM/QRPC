@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -268,4 +269,42 @@ func (server *Server) findService(serviceMethod string) (svc *service, mtype *me
 	}
 
 	return
+}
+
+const (
+	connected        = "200 Connected to QRPC"
+	defaultRPCPath   = "/_qrpc_"
+	defaultDebugPath = "/debug/qrpc"
+)
+
+// ServeHTTP implements an http.Handler that answer RPC request
+func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "CONNECT" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8") // 设置响应头
+		w.WriteHeader(http.StatusMethodNotAllowed)                  // 标记该请求不通过
+		_, _ = io.WriteString(w, "405 must CONNECT\n")              // 返回状态信息
+		return
+	}
+
+	// The Hijacker interface is implemented by ResponseWriters that allow
+	// an HTTP handler to take over the connection.
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		log.Print("rpc hijacking ", req.RemoteAddr, ": ", err.Error())
+		return
+	}
+
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+connected+"\n\n")
+	server.ServerConn(conn)
+}
+
+func (server *Server) HandleHTTP() {
+	http.Handle(defaultRPCPath, server)
+	http.Handle(defaultDebugPath, debugHTTP{server})
+	log.Println("rpc server debug path: ", defaultDebugPath)
+}
+
+// HandleHTTP 对外暴露处理 HTTP 的接口
+func HandleHTTP() {
+	DefaultServer.HandleHTTP()
 }
