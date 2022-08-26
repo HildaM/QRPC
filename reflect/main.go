@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 func main() {
@@ -31,5 +32,13 @@ func main() {
 			strings.Join(argv, ","), // 用逗号分割
 			strings.Join(returns, ","),
 		)
+	}
+
+	// 测试ticker
+	for {
+		t := time.NewTicker(time.Duration(1) * time.Minute)
+		<-t.C
+
+		println(time.Now().Minute())
 	}
 }

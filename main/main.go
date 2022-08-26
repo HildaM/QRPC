@@ -2,10 +2,12 @@ package main
 
 import (
 	qrpc "QRPC"
+	"QRPC/registry"
 	"QRPC/xclient"
 	"context"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -27,14 +29,22 @@ func (f Foo) Sleep(args Args, reply *int) error {
 	return nil
 }
 
-func startServer(addCh chan string) {
+func startRegistry(wg *sync.WaitGroup) {
+	l, _ := net.Listen("tcp", ":9999")
+	registry.HandleHTTP()
+	wg.Done()
+	_ = http.Serve(l, nil)
+}
+
+func startServer(registryAddr string, wg *sync.WaitGroup) {
 	var foo Foo
 	l, _ := net.Listen("tcp", ":0")
 	server := qrpc.NewServer()
 
 	_ = server.Register(&foo)
+	registry.Heartbeat(registryAddr, "tcp@"+l.Addr().String(), 0)
 
-	addCh <- l.Addr().String()
+	wg.Done()
 	server.Accept(l)
 }
 
@@ -58,8 +68,8 @@ func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, ar
 }
 
 // call 调用单个服务
-func call(addr1, addr2 string) {
-	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+func call(registry string) {
+	d := xclient.NewQRegistryDiscover(registry, 0)
 	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() { _ = xc.Close() }()
 
@@ -76,8 +86,8 @@ func call(addr1, addr2 string) {
 }
 
 // broadcast 调用所有服务
-func broadcast(addr1, addr2 string) {
-	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+func broadcast(registry string) {
+	d := xclient.NewQRegistryDiscover(registry, 0)
 	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() { _ = xc.Close() }()
 
@@ -88,7 +98,9 @@ func broadcast(addr1, addr2 string) {
 			defer wg.Done()
 			foo(xc, context.Background(), "broadcast", "Foo.Sum", &Args{Num1: i, Num2: i ^ i})
 
-			ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+			defer cancel()
+
 			foo(xc, ctx, "broadcast", "Foo.Sleep", &Args{Num1: i, Num2: i ^ i})
 		}(i)
 	}
@@ -98,17 +110,22 @@ func broadcast(addr1, addr2 string) {
 func main() {
 	log.SetFlags(0)
 
-	ch1 := make(chan string)
-	ch2 := make(chan string)
+	registryAddr := "http://localhost:9999/_qrpc_/registry"
+	var wg sync.WaitGroup
+	wg.Add(1)
 
-	go startServer(ch1)
-	go startServer(ch2)
-
-	addr1 := <-ch1
-	addr2 := <-ch2
+	// 确保注册中心先启动
+	go startRegistry(&wg)
+	wg.Wait()
 
 	time.Sleep(time.Second)
 
-	call(addr1, addr2)
-	broadcast(addr1, addr2)
+	wg.Add(2)
+	go startServer(registryAddr, &wg)
+	go startServer(registryAddr, &wg)
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	call(registryAddr)
+	broadcast(registryAddr)
 }
